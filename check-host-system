@@ -1,0 +1,346 @@
+#!/bin/sh
+# check-host-system.sh — Detect host platform, architecture, shell, and tools.
+# Designed to run portably on macOS, Linux, and Windows (WSL).
+
+set -e
+
+RED='\033[0;31m'
+LIGHTRED='\033[1;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+GRAY='\033[1;30m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+HAS_WARNINGS=false
+DISABLE_WARNINGS=false
+
+# --- Resolve the directory containing this script (portable, symlink-safe) ---
+
+resolve_script_dir() {
+    script="$0"
+    while [ -L "$script" ]; do
+        dir="$(cd "$(dirname "$script")" && pwd -P)"
+        script="$(readlink "$script")"
+        case "$script" in
+            /*) ;;
+            *) script="$dir/$script" ;;
+        esac
+    done
+    SCRIPT_DIR="$(cd "$(dirname "$script")" && pwd -P)"
+}
+
+# --- Platform detection ---
+
+detect_platform() {
+    case "$(uname -s)" in
+        Darwin)
+            PLATFORM="macos"
+            ;;
+        Linux)
+            if [ -f /proc/version ] && grep -qi microsoft /proc/version 2>/dev/null; then
+                PLATFORM="windows"
+            else
+                PLATFORM="linux"
+            fi
+            ;;
+        CYGWIN*|MINGW*|MSYS*)
+            PLATFORM="windows"
+            ;;
+        *)
+            PLATFORM="unknown"
+            ;;
+    esac
+}
+
+# --- macOS version and codename ---
+
+macos_codename() {
+    case "$1" in
+        10.13) echo "High Sierra" ;;
+        10.14) echo "Mojave" ;;
+        10.15) echo "Catalina" ;;
+        11)    echo "Big Sur" ;;
+        12)    echo "Monterey" ;;
+        13)    echo "Ventura" ;;
+        14)    echo "Sonoma" ;;
+        15)    echo "Sequoia" ;;
+        26)    echo "Tahoe" ;;
+        *)     echo "" ;;
+    esac
+}
+
+detect_macos_version() {
+    MACOS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
+    MACOS_MAJOR=$(echo "$MACOS_VERSION" | cut -d. -f1)
+    # For 10.x releases, use 10.minor as the "major" identifier
+    if [ "$MACOS_MAJOR" = "10" ]; then
+        MACOS_MAJOR_MINOR="10.$(echo "$MACOS_VERSION" | cut -d. -f2)"
+    else
+        MACOS_MAJOR_MINOR="$MACOS_MAJOR"
+    fi
+    MACOS_CODENAME=$(macos_codename "$MACOS_MAJOR_MINOR")
+    if [ -n "$MACOS_CODENAME" ]; then
+        OS_DISPLAY="macOS v${MACOS_VERSION} ${MACOS_CODENAME}"
+    else
+        OS_DISPLAY="macOS v${MACOS_VERSION}"
+    fi
+}
+
+# --- Windows/WSL version ---
+
+detect_windows_version() {
+    WSL_VERSION=""
+    WINDOWS_BUILD=""
+
+    # Detect WSL version (1 or 2)
+    if [ -f /proc/version ]; then
+        if grep -qi "microsoft-standard" /proc/version 2>/dev/null; then
+            WSL_VERSION="WSL2"
+        elif grep -qi "microsoft" /proc/version 2>/dev/null; then
+            WSL_VERSION="WSL1"
+        fi
+    fi
+
+    # Try to detect the WSL distro via /etc/os-release
+    WSL_DISTRO=""
+    if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        WSL_DISTRO="${PRETTY_NAME:-${NAME:-}}"
+    fi
+
+    # Try to get Windows build number
+    if command -v cmd.exe >/dev/null 2>&1; then
+        WINDOWS_BUILD=$(cmd.exe /c ver 2>/dev/null | tr -d '\r' | sed -n 's/.*\[\(.*\)\]/\1/p')
+    fi
+
+    # Build display string
+    OS_DISPLAY="Windows"
+    if [ -n "$WSL_VERSION" ]; then
+        OS_DISPLAY="${OS_DISPLAY} (${WSL_VERSION})"
+    fi
+    if [ -n "$WINDOWS_BUILD" ]; then
+        OS_DISPLAY="${OS_DISPLAY} — ${WINDOWS_BUILD}"
+    fi
+    if [ -n "$WSL_DISTRO" ]; then
+        OS_DISPLAY="${OS_DISPLAY} [${WSL_DISTRO}]"
+    fi
+}
+
+# --- Linux version ---
+
+detect_linux_version() {
+    if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        OS_DISPLAY="Linux — ${PRETTY_NAME:-${NAME:-unknown}}"
+    else
+        OS_DISPLAY="Linux — $(uname -r)"
+    fi
+}
+
+# --- Architecture ---
+
+detect_arch() {
+    RAW_ARCH=$(uname -m)
+    case "$RAW_ARCH" in
+        x86_64|amd64)   ARCH="x86-64" ;;
+        aarch64|arm64)   ARCH="ARM64" ;;
+        armv7l|armhf)    ARCH="ARM32" ;;
+        i386|i686)       ARCH="x86 (32-bit)" ;;
+        *)               ARCH="$RAW_ARCH" ;;
+    esac
+}
+
+# --- Shell detection ---
+
+detect_shell() {
+    # Use the SHELL environment variable (user's login shell)
+    USER_SHELL="${SHELL:-unknown}"
+}
+
+# --- Homebrew detection (macOS only) ---
+
+detect_homebrew() {
+    HOMEBREW_INSTALLED="No"
+    HOMEBREW_PATH=""
+    if command -v brew >/dev/null 2>&1; then
+        HOMEBREW_PATH=$(command -v brew)
+        HOMEBREW_INSTALLED="Yes (${HOMEBREW_PATH})"
+    fi
+}
+
+# --- Docker detection ---
+
+detect_docker() {
+    DOCKER_INSTALLED="No"
+    if command -v docker >/dev/null 2>&1; then
+        DOCKER_VERSION=$(docker --version 2>/dev/null | sed 's/Docker version /v/' | sed 's/,.*//')
+        if [ -n "$DOCKER_VERSION" ]; then
+            DOCKER_INSTALLED="Yes (${DOCKER_VERSION})"
+        else
+            DOCKER_INSTALLED="Yes"
+        fi
+    fi
+}
+
+VERSION_TO_INSTALL="container"
+
+do_check_macos() {
+    if [ "$PLATFORM" != "macos" ]; then
+        return
+    fi
+
+    # Warn if major version <= 13 (Ventura or earlier)
+    # For 10.x releases, the major is always <= 13, so they get the warning too
+    TOO_OLD=false
+    if [ "$MACOS_MAJOR" -le 13 ] 2>/dev/null; then
+        TOO_OLD=true
+    fi
+
+    if [ "$TOO_OLD" = true ]; then
+	VERSION_TO_INSTALL="container"
+        printf "\n"
+        printf '%b' "${YELLOW}"
+        printf 'WARNING: Your macOS version (%s) is not recent enough to install our tools natively:\n' "$OS_DISPLAY"
+        printf '%b' "${YELLOW}"
+        printf '  You should set up the %bcontainer version, or upgrade your macOS version%b\n' "${BOLD}" "${NC}"
+	printf '  If you have questions about this, please contact the course staff.\n'
+    else
+	VERSION_TO_INSTALL="native"
+    fi
+
+    # Warn if the repo is in a directory that may be synced by iCloud
+    HOME_DIR=$(eval echo "~")
+    case "$SCRIPT_DIR" in
+        "${HOME_DIR}/Desktop"*|"${HOME_DIR}/Documents"*|"${HOME_DIR}/Library/Mobile Documents"*)
+            HAS_WARNINGS=true
+            printf '\n'
+            printf '%b' "${RED}"
+            printf 'WARNING:  Your repository appears to be in a directory synced with iCloud'
+	    printf '  (%s)\n' "$SCRIPT_DIR"
+	    printf 'This has been known to cause spurious and hard-to-find issues as iCloud swaps out your files\n'
+	    printf "To fix this, you should go to your home directory (eg. run 'cd ~') and move or clone this\n"
+	    printf "repository there.\n"
+	    printf "To suppress this warning and continue anyway (NOT RECOMMENDED), run this command again with\n"
+	    printf "'--disable-warnings'\n"
+            printf '%b' "${NC}"
+            ;;
+    esac
+}
+
+do_check_windows() {
+    # Warn if the repo is on the Windows host filesystem (mounted under /mnt)
+    case "$SCRIPT_DIR" in
+        /mnt/*)
+            HAS_WARNINGS=true
+            printf '\n'
+            printf '%b' "${RED}"
+	    printf 'WARNING:  Your container repo appears to be located in %s.  On WSL, directories under /mnt/*\n' "$SCRIPT_DIR"
+	    printf "are shared with your Windows host, which will have VERY slow performance.\n"
+	    printf "To fix this, you should go to your WSL home directory (eg. run 'cd ~' in your WSL terminal)\n"
+	    printf "and move or clone this repository there.\n"
+	    printf "To suppress this warning and continue anyway (NOT RECOMMENDED), run this command again with\n"
+	    printf "'--disable-warnings'\n"
+            printf '%b' "${NC}"
+            ;;
+    esac
+}
+
+do_check_linux() {
+    printf "You appear to be running Linux.  You may choose to install the container version,\n"
+    printf "or install our tools locally.  If you work locally, you are responsible for making sure\n"
+    printf "your implementation still works in our grading environment.\n"
+    printf "If you have questions about developing on Linux, please ask!  We're happy to help.\n"
+
+    VERSION_TO_INSTALL="container"
+}
+
+warn_unknown_os() {
+    VERSION_TO_INSTALL="container"
+
+    printf "Unable to detect your OS version.  This likely means you are using an older or unsupported host OS.\n"
+    printf "We recommend setting up the container version.  If you think this message is an error or aren't sure\n"
+    printf "how to proceed, please contact the course staff.\n"
+}
+
+
+# === Main ===
+
+main() {
+    # Parse arguments
+    for arg in "$@"; do
+        case "$arg" in
+            --disable-warnings) DISABLE_WARNINGS=true ;;
+        esac
+    done
+
+    resolve_script_dir
+    detect_platform
+    detect_arch
+    detect_shell
+    detect_docker
+
+    case "$PLATFORM" in
+	macos)
+            detect_macos_version
+            detect_homebrew
+            ;;
+	windows)
+            detect_windows_version
+            ;;
+	linux)
+            detect_linux_version
+            ;;
+	*)
+            OS_DISPLAY="Unknown ($(uname -s))"
+            ;;
+    esac
+
+    # --- Output ---
+
+    printf "Host OS:         %s\n" "$OS_DISPLAY"
+    printf "Architecture:    %s\n" "$ARCH"
+    printf "Shell:           %s\n" "$USER_SHELL"
+
+    if [ "$PLATFORM" = "macos" ]; then
+	printf "Homebrew:        %s\n" "$HOMEBREW_INSTALLED"
+    fi
+
+    printf "Docker:          %s\n" "$DOCKER_INSTALLED"
+
+    printf "\n===================================================================================\n"
+
+    case "$PLATFORM" in
+	macos)
+	    do_check_macos
+	    ;;
+	windows)
+	    do_check_windows
+	    ;;
+	linux)
+	    do_check_linux
+	    ;;
+	*)
+	    warn_unknown_os
+	    ;;
+    esac
+
+    if [ "$HAS_WARNINGS" = true ] && [ "$DISABLE_WARNINGS" = false ]; then
+	printf '\n%b' "${RED}"
+	printf '\nDetected issues with your repo setup that need fixing.%b\n' "${NC}"
+    else
+	if [ "$VERSION_TO_INSTALL" = "native" ]; then
+	    printf '\nYour system looks OK to install the %bnative macOS (homebrew) version%b\n' "${BOLD}" "${NC}"
+	elif [ "$VERSION_TO_INSTALL" = "container" ]; then
+	    printf '\nYour system looks OK to install the %bcontainer version%b\n' "${BOLD}" "${NC}"
+	fi
+    fi
+}
+
+
+main $@

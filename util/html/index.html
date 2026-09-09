@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>QEMU Web Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1e1e1e; color: #ccc; font-family: 'Fira Code', monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* --- Top bar --- */
+  #topbar {
+    display: flex; align-items: center; height: 32px;
+    background: #333; padding: 0 8px; flex-shrink: 0;
+    position: relative; z-index: 100;
+  }
+  #topbar .title { font-size: 14px; font-weight: bold; }
+  #topbar .spacer { flex: 1; }
+  #status-msg {
+    font-size: 12px; color: #f80; margin-right: 8px;
+    display: none; align-items: center; gap: 6px;
+  }
+  #status-msg.visible { display: flex; }
+  #status-msg button {
+    background: #555; color: #ccc; border: 1px solid #666;
+    padding: 1px 6px; font-size: 12px; font-family: 'Fira Code', monospace;
+    cursor: pointer; border-radius: 2px;
+  }
+  #status-msg button:hover { background: #666; }
+  #hamburger {
+    background: none; border: none; color: #ccc;
+    font-size: 22px; cursor: pointer; padding: 2px 4px;
+  }
+  #hamburger:hover { color: #fff; }
+
+  /* --- Dropdown menu --- */
+  #menu-dropdown {
+    display: none; position: absolute; top: 32px; right: 4px;
+    background: #2a2a2a; border: 1px solid #444; padding: 10px 14px;
+    z-index: 99; min-width: 280px; font-size: 12px;
+  }
+  #menu-dropdown.open { display: block; }
+  #menu-dropdown label { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; cursor: pointer; }
+  #menu-dropdown input[type="text"] {
+    width: 100%; background: #1e1e1e; color: #ccc; border: 1px solid #555;
+    padding: 3px 6px; font-family: 'Fira Code', monospace; font-size: 12px;
+    margin-bottom: 10px;
+  }
+  #menu-dropdown input[type="text"]:disabled { opacity: 0.4; }
+  #menu-dropdown select {
+    width: 100%; background: #1e1e1e; color: #ccc; border: 1px solid #555;
+    padding: 3px 6px; font-family: 'Fira Code', monospace; font-size: 12px;
+    margin-bottom: 10px;
+  }
+  #menu-dropdown select:disabled { opacity: 0.4; }
+
+  #menu-dropdown fieldset {
+    border: 1px solid #555; padding: 8px 10px; margin-bottom: 8px;
+  }
+  #menu-dropdown legend {
+    color: #999; font-size: 11px; padding: 0 4px;
+  }
+  #menu-dropdown .menu-label { margin-top: 8px; margin-bottom: 4px; color: #999; }
+  #menu-dropdown .connect-row { text-align: right; }
+  #connect-btn {
+    background: #555; color: #ccc; border: 1px solid #666;
+    padding: 4px 14px; font-family: 'Fira Code', monospace; font-size: 12px;
+    cursor: pointer; border-radius: 2px;
+  }
+  #connect-btn:hover { background: #666; }
+
+  /* --- Viewer panes --- */
+  #viewers { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .pane-header { padding: 4px 8px; background: #333; font-size: 13px; font-weight: bold; flex-shrink: 0; }
+  #vnc-section { flex: 7; display: flex; flex-direction: column; overflow: hidden; }
+  #serial-section { flex: 3; display: flex; flex-direction: column; overflow: hidden; }
+  #vnc-pane { flex: 1; position: relative; overflow: hidden; background: rgb(40, 40, 40); }
+  #vnc-pane.vnc-original { display: flex; align-items: center; justify-content: center; overflow: auto; }
+  #serial-pane { flex: 1; overflow: hidden; }
+  .pane-hidden { display: none !important; }
+  .xterm {
+      height: 100%;
+      font-variant-ligatures: none;
+      font-variant-ligatures: no-common-ligatures;
+  }
+  .xterm-rows {
+      font-variant-ligatures: none !important;
+  }
+
+  .xterm-width-cache-measure-container {
+      font-variant-ligatures: none !important;
+  }
+
+  #no-viewers {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    color: #666; font-size: 14px;
+  }
+</style>
+<!-- bundled dependencies (noVNC, xterm.js, Fira Code) -->
+<link rel="stylesheet" href="dist/lib.css">
+<script type="module" src="main.js"></script>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="title">QEMU web viewer</span>
+  <span class="spacer"></span>
+  <span id="status-msg"></span>
+  <button id="hamburger">&#9776;</button>
+</div>
+
+<div id="menu-dropdown">
+  <fieldset>
+    <legend>Connection parameters</legend>
+    <label><input type="checkbox" id="vnc-enabled" checked> Connect to display</label>
+    <input type="text" id="vnc-addr" value="localhost:5700" placeholder="host:port">
+    <label><input type="checkbox" id="serial-enabled"> Connect to serial console</label>
+    <input type="text" id="serial-addr" value="localhost:5838" placeholder="host:port">
+    <div class="connect-row">
+      <button id="connect-btn">Connect</button>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>Options</legend>
+    <label><input type="checkbox" id="auto-reconnect" checked> Try to reconnect automatically</label>
+    <label><input type="checkbox" id="reconnect-on-focus" checked> Reconnect on window focus</label>
+    <div class="menu-label">Display scaling</div>
+    <select id="vnc-scaling">
+      <option value="fit">Zoom to fit</option>
+      <option value="original">Original size</option>
+    </select>
+    <label><input type="checkbox" id="wait-serial" checked> Wait for serial before connecting display</label>
+  </fieldset>
+</div>
+
+<div id="viewers">
+  <div id="vnc-section">
+    <div class="pane-header">Display (VNC)</div>
+    <div id="vnc-pane"></div>
+  </div>
+  <div id="serial-section">
+    <div class="pane-header">Serial console</div>
+    <div id="serial-pane"></div>
+  </div>
+  <div id="no-viewers" class="pane-hidden">No viewers enabled</div>
+</div>
+</body>
+</html>

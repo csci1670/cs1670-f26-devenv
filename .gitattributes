@@ -1,0 +1,6 @@
+# Force unix newlines on all platforms
+run-container text eol=lf
+check-host-system text eol=lf
+container-home/cs1670-scripts/run-webviewer-container text eol=lf
+util/run-webviewer-native text eol=lf
+*.sh text eol=lf

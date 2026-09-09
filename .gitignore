@@ -1,0 +1,15 @@
+*~
+\#*#
+.\#*
+
+.vagrant/
+.vscode
+.gitconfig
+.bash_history
+container-home/
+home/
+
+docker/.image-version
+
+
+.DS_Store
