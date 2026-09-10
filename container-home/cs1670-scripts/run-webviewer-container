@@ -1,0 +1,61 @@
+#!/bin/bash
+
+set -eu
+
+PORT_DEFAULT=8765
+PORT_CONTAINER=14600
+PORT=$PORT_DEFAULT
+BIND_ADDR=127.0.0.1
+
+IN_CONTAINER=false
+HTML_DIR=$@
+
+__detect_configure_container() {
+    if [ -e /etc/image-version ]; then
+	IN_CONTAINER=true
+	BIND_ADDR=0.0.0.0
+	PORT=$PORT_CONTAINER
+    fi
+}
+
+__resolve_script_dir() {
+    script="$0"
+    while [ -L "$script" ]; do
+        dir="$(cd "$(dirname "$script")" && pwd -P)"
+        script="$(readlink "$script")"
+        case "$script" in
+            /*) ;;
+            *) script="$dir/$script" ;;
+        esac
+    done
+    SCRIPT_DIR="$(cd "$(dirname "$script")" && pwd -P)"
+}
+
+
+main()
+{
+    __resolve_script_dir
+    __detect_configure_container
+
+    while [ $# -gt 0 ]; do
+	key=$1
+        case "$key" in
+	    --port)
+		PORT=$2
+		shift 2
+		;;
+	    --bind-addr)
+		BIND_ADDR=$2
+		shift 2
+		;;
+        esac
+    done
+
+    HTML_PATH=${SCRIPT_DIR}/html
+
+    echo "Starting QEMU web monitor"
+    echo "To connect, go to http://localhost:${PORT} in your browser"
+    python3 -m http.server -d "$HTML_PATH" -b "$BIND_ADDR" "$PORT"
+}
+
+main $@
